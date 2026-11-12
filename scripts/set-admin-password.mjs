@@ -25,7 +25,7 @@ function secretInput(prompt) {
 const first=await secretInput('New Max admin password (10–128 characters): ');
 const confirm=await secretInput('Repeat password: ');
 if(first!==confirm || first.length<10 || first.length>128){console.error('Passwords differ or do not meet length requirements.');process.exit(1);}
-const salt=randomBytes(16),iterations=310000;
+const salt=randomBytes(16),iterations=100000;
 const hash=pbkdf2Sync(first,salt,iterations,32,'sha256');
 const packed=`pbkdf2-sha256$${iterations}$${salt.toString('base64url')}$${hash.toString('base64url')}`;
 const sql=`UPDATE users SET password_hash='${packed}',active=1,role='admin' WHERE username='max'; DELETE FROM sessions WHERE user_id=(SELECT id FROM users WHERE username='max');`;

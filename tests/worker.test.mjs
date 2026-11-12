@@ -135,3 +135,10 @@ test('chunked media: private, complete, and downloadable; pending uploads never 
   const actual=Buffer.concat(parts.map(p=>Buffer.from(p)));
   assert.deepEqual(actual,Buffer.from(bytes));
 });
+
+test('PBKDF2 hash stays within Cloudflare Workers 100k ceiling',async()=>{
+  const h=await internals.passwordHash('ValidExamplePassword123!');
+  assert.match(h,/^pbkdf2-sha256\$100000\$/);
+  assert.equal(await internals.passwordMatches('ValidExamplePassword123!',h),true);
+  assert.equal(await internals.passwordMatches('NotThePassword123!',h),false);
+});

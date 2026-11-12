@@ -32,8 +32,8 @@ const from64url = s => Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/'
 async function passwordHash(password) {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const base = await crypto.subtle.importKey('raw', enc.encode(password), {name:'PBKDF2'}, false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits({name:'PBKDF2',hash:'SHA-256',salt,iterations:310000},base,256);
-  return `pbkdf2-sha256$310000$${b64url(salt)}$${b64url(new Uint8Array(bits))}`;
+  const bits = await crypto.subtle.deriveBits({name:'PBKDF2',hash:'SHA-256',salt,iterations:100000},base,256);
+  return `pbkdf2-sha256$100000$${b64url(salt)}$${b64url(new Uint8Array(bits))}`;
 }
 function safeEqual(a,b) {
   if(typeof a!=='string'||typeof b!=='string') return false;
@@ -48,7 +48,7 @@ async function passwordMatches(password,hash) {
     const [scheme, count, salt64, expected64] = hash.split('$');
     if(scheme!=='pbkdf2-sha256' || !/^\d+$/.test(count)) return false;
     const iterations=Number(count);
-    if(iterations<100000||iterations>1000000) return false;
+    if(iterations<100000||iterations>100000) return false;
     const salt=from64url(salt64);
     const base=await crypto.subtle.importKey('raw',enc.encode(password),{name:'PBKDF2'},false,['deriveBits']);
     const bits=await crypto.subtle.deriveBits({name:'PBKDF2',hash:'SHA-256',salt,iterations},base,256);
@@ -521,7 +521,10 @@ export default {
         response=await apiRoute(request,env,url.pathname);
       }else if(request.method==='GET'||request.method==='HEAD') {
         // Static assets contain no member data. Sensitive information only comes from /api.
-        response = await env.ASSETS.fetch(request);
+        // Pass the original canonical URL to the assets service.
+        // Rewriting / to /index.html triggers Cloudflare's automatic
+        // /index.html -> / redirect and causes an infinite redirect loop.
+        response=await env.ASSETS.fetch(request);
         if(url.pathname==='/' || url.pathname==='/index.html'){
           const h=new Headers(response.headers);h.set('Cache-Control','no-store');
           response=new Response(response.body,{status:response.status,headers:h});
