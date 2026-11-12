@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "forum-hq",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-11-11",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "forum-hq-db",
+      "database_id": "39818646-e358-40ab-9e7e-96dd85b64fe0",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

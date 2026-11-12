@@ -71,7 +71,44 @@ const getAssignment=(tid,uid=me.id)=>state.assignments.find(a=>a.task_id===tid&&
 const uncompleted=()=>state.assignments.filter(a=>a.user_id===me.id&&a.status!=='done').length;
 const dueSoon=(task)=>task.due_at&&relativeDays(task.due_at)>=0&&relativeDays(task.due_at)<=7;
 
+// Invisible Cloudflare adaptation: large media travels in small private D1 chunks.
+// The form, member permissions, review workflow and 50 MB attachment limit stay the same.
+const CF_FILE_PART=256*1024;
+async function uploadInParts(form,file){
+  const start=await api('/api/submissions/start','POST',{
+    title:form.get('title'),notes:form.get('notes'),url:form.get('url'),
+    task_id:form.get('task_id'),filename:file.name,mime:file.type,size:file.size
+  });
+  try{
+    for(let p=0;p<Math.ceil(file.size/start.part_size);p++){
+      const res=await fetch(`/api/submissions/${start.id}/chunk/${p}`,{
+        method:'PUT',credentials:'same-origin',
+        headers:{'X-CSRF-Token':me.csrf,'Content-Type':'application/octet-stream'},
+        body:file.slice(p*start.part_size,(p+1)*start.part_size)
+      });
+      if(!res.ok){let out={};try{out=await res.json();}catch{}throw new Error(out.detail||'File upload failed.');}
+    }
+    return await api(`/api/submissions/${start.id}/finish`,'POST');
+  }catch(e){await api(`/api/submissions/${start.id}/abort`,'POST').catch(()=>{});throw e;}
+}
+async function downloadInParts(submission){
+  if(!submission||!submission.stored_name)return;
+  const chunks=[];
+  const total=Math.ceil(submission.size/CF_FILE_PART);
+  for(let part=0;part<total;part++){
+    const res=await fetch(`/api/submissions/${submission.id}/chunk/${part}`,{credentials:'same-origin'});
+    if(!res.ok){let data={};try{data=await res.json();}catch{}throw new Error(data.detail||'Download failed.');}
+    chunks.push(await res.blob());
+  }
+  const objectUrl=URL.createObjectURL(new Blob(chunks,{type:submission.mime||'application/octet-stream'}));
+  const a=document.createElement('a');a.href=objectUrl;a.download=submission.filename||'submission';document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(objectUrl),60000);
+}
 async function api(path,method='GET',data=null){
+ if(path==='/api/submissions'&&method==='POST'&&data instanceof FormData){
+   const file=data.get('attachment');
+   if(file&&file.size>1024*1024)return await uploadInParts(data,file);
+ }
  const headers={};const opts={method,credentials:'same-origin',headers};
  if(me&&method!=='GET')headers['X-CSRF-Token']=me.csrf;
  if(data instanceof FormData){opts.body=data;}else if(data!==null){headers['Content-Type']='application/json';opts.body=JSON.stringify(data);}
@@ -144,7 +181,7 @@ function tasksView(){
 }
 function submissionsView(){
  const list=state.submissions;
- return `${head('WORK SUBMISSIONS',isAdmin()?'Team inbox':'My submissions',isAdmin()?'Review practice documents, videos, cases, and links.':'Send your work directly to team leadership.',btn(`${icon('upload')} New submission`,'submission-new',''))}<div class="panel"><div class="panel-header"><div><h2>${isAdmin()?'Incoming work':'Submission history'}</h2><p>Uploads are private: only the submitter and admins can open files</p></div><span class="pill purple">${list.length} submissions</span></div>${list.length?`<div class="table-wrap"><table><thead><tr><th>Work</th>${isAdmin()?'<th>From</th>':''}<th>Submitted</th><th>Review</th><th>Action</th></tr></thead><tbody>${list.map(s=>`<tr><td><b>${esc(s.title)}</b><div class="muted" style="margin-top:5px">${s.filename?`${icon('download',12)} ${truncated(s.filename,40)}`:s.url?'Shared link':'Text note'}${s.notes?` · ${truncated(s.notes,55)}`:''}</div></td>${isAdmin()?`<td>${esc(mName(s.user_id))}</td>`:''}<td class="mono">${shortDate(s.created_at.slice(0,10))}</td><td>${statusPill(s.status)}${s.feedback?`<div class="hint" style="max-width:200px">${truncated(s.feedback,85)}</div>`:''}</td><td><div class="row">${s.stored_name?`<a class="btn secondary small" href="/api/submissions/${s.id}/download">${icon('download')} File</a>`:''}${s.url?`<a class="btn secondary small" href="${attr(s.url)}" target="_blank" rel="noopener noreferrer">${icon('arrow')} Link</a>`:''}${isAdmin()?btn('Review','submission-review','ghost small',s.id):s.feedback?btn('Feedback','submission-feedback','ghost small',s.id):''}</div></td></tr>`).join('')}</tbody></table></div>`:noItems('No work submitted yet','Upload a PDF, document, video, audio file or link.','upload',btn('Submit work','submission-new','small'))}</div>`;
+ return `${head('WORK SUBMISSIONS',isAdmin()?'Team inbox':'My submissions',isAdmin()?'Review practice documents, videos, cases, and links.':'Send your work directly to team leadership.',btn(`${icon('upload')} New submission`,'submission-new',''))}<div class="panel"><div class="panel-header"><div><h2>${isAdmin()?'Incoming work':'Submission history'}</h2><p>Uploads are private: only the submitter and admins can open files</p></div><span class="pill purple">${list.length} submissions</span></div>${list.length?`<div class="table-wrap"><table><thead><tr><th>Work</th>${isAdmin()?'<th>From</th>':''}<th>Submitted</th><th>Review</th><th>Action</th></tr></thead><tbody>${list.map(s=>`<tr><td><b>${esc(s.title)}</b><div class="muted" style="margin-top:5px">${s.filename?`${icon('download',12)} ${truncated(s.filename,40)}`:s.url?'Shared link':'Text note'}${s.notes?` · ${truncated(s.notes,55)}`:''}</div></td>${isAdmin()?`<td>${esc(mName(s.user_id))}</td>`:''}<td class="mono">${shortDate(s.created_at.slice(0,10))}</td><td>${statusPill(s.status)}${s.feedback?`<div class="hint" style="max-width:200px">${truncated(s.feedback,85)}</div>`:''}</td><td><div class="row">${s.stored_name?`<a class="btn secondary small" href="/api/submissions/${s.id}/download" data-download="${s.id}">${icon('download')} File</a>`:''}${s.url?`<a class="btn secondary small" href="${attr(s.url)}" target="_blank" rel="noopener noreferrer">${icon('arrow')} Link</a>`:''}${isAdmin()?btn('Review','submission-review','ghost small',s.id):s.feedback?btn('Feedback','submission-feedback','ghost small',s.id):''}</div></td></tr>`).join('')}</tbody></table></div>`:noItems('No work submitted yet','Upload a PDF, document, video, audio file or link.','upload',btn('Submit work','submission-new','small'))}</div>`;
 }
 function trainingView(){
  let selected=lessons.filter(l=>lessonFilter==='All'||l.level===lessonFilter);
@@ -268,7 +305,7 @@ function showAnnouncementForm(){openModal('Post announcement',`${field('Headline
 function showResourceForm(){openModal('Add a resource',`${field('Title','title','',{required:true})}${selection('Category','category',[['Guide','Guide'],['Template','Template'],['Evidence','Evidence'],['Video','Video'],['Article','Article'],['Other','Other']])}${field('Short description','description')}${field('Link (optional)','url','',{type:'url',placeholder:'https://...'})}${area('Content or instructions (optional)','body')}`,async f=>{await api('/api/resources','POST',formJSON(f));},{submit:'Publish resource'});}
 function showTournamentForm(){openModal('Add tournament',`${field('Tournament name','title','',{required:true,placeholder:'e.g. Winter Invitational'})}<div class="form-row">${field('Date','event_date','',{type:'date',required:true})}${field('Time / check-in','event_time','',{placeholder:'e.g. 8:30 AM'})}</div>${field('Location','location','',{placeholder:'School, city, or TBD'})}${field('Registration / info URL','link','',{type:'url',placeholder:'https://tabroom.com/...'})}${area('Details','details','','Notes about schedule, travel, registration, partner prep.')}`,async f=>{await api('/api/tournaments','POST',formJSON(f));},{submit:'Add to calendar'});}
 function showPasswordChange(){openModal('Change my password',`${field('Current password','current','',{type:'password',required:true})}${field('New password','password','',{type:'password',required:true,min:10,hint:'At least 10 characters. Use a unique password or passphrase.'})}${field('Confirm new password','confirm','',{type:'password',required:true})}`,async f=>{if(f.get('password')!==f.get('confirm')){toast('New passwords do not match.',true);return false;}await api('/api/password','POST',{current:f.get('current'),password:f.get('password')});},{submit:'Update password'});}
-function showSubmissionReview(s){openModal('Review · '+s.title,`<p class="muted">Submitted by <b>${esc(mName(s.user_id))}</b> · ${fmtDate(s.created_at.slice(0,10))}</p>${s.notes?`<div class="card-soft" style="white-space:pre-wrap;margin-bottom:18px">${esc(s.notes)}</div>`:''}<div class="row" style="margin:0 0 20px">${s.stored_name?`<a class="btn secondary small" href="/api/submissions/${s.id}/download">${icon('download')} Download file</a>`:''}${s.url?`<a class="btn secondary small" href="${attr(s.url)}" target="_blank" rel="noopener noreferrer">${icon('arrow')} Open link</a>`:''}</div>${selection('Review result','status',[['new','Awaiting review'],['reviewed','Reviewed'],['revision_requested','Request revision']],s.status)}${area('Feedback to member','feedback',s.feedback||'','Specific notes, strengths, or requested changes')}`,async f=>{await api(`/api/submissions/${s.id}`,'PATCH',formJSON(f));},{submit:'Send feedback'});}
+function showSubmissionReview(s){openModal('Review · '+s.title,`<p class="muted">Submitted by <b>${esc(mName(s.user_id))}</b> · ${fmtDate(s.created_at.slice(0,10))}</p>${s.notes?`<div class="card-soft" style="white-space:pre-wrap;margin-bottom:18px">${esc(s.notes)}</div>`:''}<div class="row" style="margin:0 0 20px">${s.stored_name?`<a class="btn secondary small" href="/api/submissions/${s.id}/download" data-download="${s.id}">${icon('download')} Download file</a>`:''}${s.url?`<a class="btn secondary small" href="${attr(s.url)}" target="_blank" rel="noopener noreferrer">${icon('arrow')} Open link</a>`:''}</div>${selection('Review result','status',[['new','Awaiting review'],['reviewed','Reviewed'],['revision_requested','Request revision']],s.status)}${area('Feedback to member','feedback',s.feedback||'','Specific notes, strengths, or requested changes')}`,async f=>{await api(`/api/submissions/${s.id}`,'PATCH',formJSON(f));},{submit:'Send feedback'});}
 function showSubmissionFeedback(s){openModal('Feedback · '+s.title,`<div class="row" style="margin-bottom:18px">${statusPill(s.status)}<span class="muted">${fmtDate(s.created_at.slice(0,10))}</span></div><div class="card-soft" style="white-space:pre-wrap">${esc(s.feedback||'No feedback yet.')}</div>`);}
 function showCaseView(c){openModal(c.title,`<div class="row" style="margin-bottom:17px">${catPill(c.side)}${catPill(c.category)}${statusPill(c.status)}</div><div class="label">Argument and evidence</div><div style="white-space:pre-wrap;line-height:1.8;color:#5e697c">${esc(c.argument||'No argument text yet.')}</div><hr class="section-divider"><div class="row-between" style="flex-wrap:wrap"><span class="muted" style="font-size:12px">Added by ${esc(mName(c.created_by))}</span>${c.source_url?`<a href="${attr(c.source_url)}" target="_blank" rel="noopener noreferrer" class="btn ghost small">Original source ${icon('arrow',13)}</a>`:''}</div>${isAdmin()||c.created_by===me.id?`<div class="row" style="margin-top:20px">${btn('Edit argument','case-edit','secondary small',c.id)}${btn('Delete','case-delete','danger small',c.id)}</div>`:''}`,null,{wide:true});}
 async function makeTempCredentials(m){const res=await api(`/api/members/${m.id}/reset-password`,'POST');await refresh();credentialsModal(m.username,res.temporary_password);}
@@ -283,6 +320,16 @@ function updateTimerUI(){const clock=$('#timer-clock');if(clock)clock.textConten
 
 // All interactions are delegated, including content that was dynamically rendered.
 document.addEventListener('click',async event=>{
+ const dl=event.target.closest('a[data-download]');
+ if(dl){
+   const submission=state?.submissions.find(s=>s.id===Number(dl.dataset.download));
+   if(submission?.size>1024*1024){
+     event.preventDefault();
+     try{toast('Preparing your private download…');await downloadInParts(submission);}
+     catch(e){toast(e.message,true);}
+     return;
+   }
+ }
  const nav=event.target.closest('[data-page]');if(nav){go(nav.dataset.page);return;}
  const day=event.target.closest('[data-event-date]');if(day){const ev=state.tournaments.filter(e=>e.event_date===day.dataset.eventDate);openModal(fmtDate(day.dataset.eventDate),ev.map(e=>`<div class="card-soft" style="margin-bottom:12px"><h3>${esc(e.title)}</h3><p class="muted">${esc(e.event_time||'Time TBD')} · ${esc(e.location||'Location TBD')}</p><p style="white-space:pre-wrap">${esc(e.details||'No details yet.')}</p></div>`).join(''));return;}
  const node=event.target.closest('[data-action]');if(!node)return;
