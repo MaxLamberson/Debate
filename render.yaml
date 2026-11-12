@@ -1,0 +1,20 @@
+# Example blueprint. Requires a paid persistent disk for SQLite/uploads.
+services:
+  - type: web
+    name: forum-hq
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT --proxy-headers
+    healthCheckPath: /health
+    envVars:
+      - key: DATA_DIR
+        value: /var/data
+      - key: COOKIE_SECURE
+        value: '1'
+      - key: INITIAL_ADMIN_PASSWORD
+        sync: false
+    disk:
+      name: forum-data
+      mountPath: /var/data
+      sizeGB: 2
